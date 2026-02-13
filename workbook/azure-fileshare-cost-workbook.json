@@ -1,0 +1,427 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# Azure File Share - Cost Report\n\nThis workbook shows **estimated cost per file share** by distributing storage account billing costs proportionally based on provisioned capacity.\n\n> **Data Source:** Cost Management API data ingested into Log Analytics via Logic App + Data Collection Rule.\n\n---"
+      },
+      "name": "header"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "sub-param",
+            "version": "KqlParameterItem/1.0",
+            "name": "Subscription",
+            "type": 6,
+            "isRequired": true,
+            "defaultValue": "/subscriptions/25a273f5-bd71-4542-a5d8-495b25fd38d5"
+          },
+          {
+            "id": "la-param",
+            "version": "KqlParameterItem/1.0",
+            "name": "LogAnalyticsWorkspace",
+            "label": "Log Analytics Workspace",
+            "type": 5,
+            "isRequired": true,
+            "query": "resources\r\n| where type == 'microsoft.operationalinsights/workspaces'\r\n| project value = id, label = name, group = resourceGroup",
+            "crossComponentResources": [
+              "{Subscription}"
+            ],
+            "typeSettings": {
+              "additionalResourceOptions": [],
+              "showDefault": false
+            },
+            "queryType": 1,
+            "resourceType": "microsoft.resourcegraph/resources"
+          },
+          {
+            "id": "stg-param",
+            "version": "KqlParameterItem/1.0",
+            "name": "StorageAccount",
+            "type": 2,
+            "isRequired": true,
+            "query": "resources\r\n| where type == 'microsoft.storage/storageaccounts'\r\n| where kind == 'FileStorage'\r\n| project value = id, label = name, group = resourceGroup",
+            "crossComponentResources": [
+              "{Subscription}"
+            ],
+            "queryType": 1,
+            "resourceType": "microsoft.resourcegraph/resources"
+          }
+        ],
+        "style": "pills",
+        "queryType": 0,
+        "resourceType": "microsoft.resourcegraph/resources"
+      },
+      "name": "parameters"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## \ud83d\udcb0 Cost Per Share\n\nEstimated cost per file share, calculated by distributing the storage account's total billing cost proportionally based on each share's provisioned capacity.\n\n`ShareCost = (ShareProvisionedGiB / TotalProvisionedGiB) \u00d7 AccountTotalCost`"
+      },
+      "name": "share-cost-header"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Cost Per Share Summary - Current Month\n// \u26a0\ufe0f UPDATE THIS BLOCK with your file share names and provisioned sizes (GiB)\n// Run this to find your shares:\n//   az rest --method get --url \"https://management.azure.com<storage-account-resource-id>/fileServices/default/shares?api-version=2023-05-01\" --query \"value[].{name:name,GiB:properties.shareQuota}\" -o table\nlet ShareInfo = datatable(ShareName:string, ProvisionedGiB:real)\n[\n    \"share1\", 100.0,\n    \"share2\", 500.0\n];\nlet TotalCapacity = ShareInfo | summarize TotalGiB = sum(ProvisionedGiB);\nlet AccountCosts = AzureCostData_CL\n| where TimeGenerated >= startofmonth(now())\n| extend sa = tolower(StorageAccountName)\n| where sa == tolower(extract(@\"/storageAccounts/([^/]+)\", 1, \"{StorageAccount}\"))\n| extend Cost = todouble(CostValue)\n| summarize AccountTotalCost = sum(Cost);\nShareInfo\n| extend TotalGiB = toscalar(TotalCapacity)\n| extend AccountTotalCost = toscalar(AccountCosts)\n| extend SharePortion = round((ProvisionedGiB / TotalGiB) * 100, 1)\n| extend EstimatedCost = round((ProvisionedGiB / TotalGiB) * AccountTotalCost, 4)\n| project ShareName, ProvisionedGiB, SharePortion, EstimatedCost\n| order by EstimatedCost desc",
+        "size": 1,
+        "title": "Cost Per Share Summary - Current Month",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "{LogAnalyticsWorkspace}"
+        ],
+        "visualization": "tiles",
+        "tileSettings": {
+          "titleContent": {
+            "columnMatch": "ShareName",
+            "formatter": 1
+          },
+          "subtitleContent": {
+            "columnMatch": "ProvisionedGiB",
+            "formatter": 1,
+            "numberFormat": {
+              "unit": 0,
+              "options": {
+                "style": "decimal",
+                "maximumFractionDigits": 0,
+                "suffix": " GiB provisioned"
+              }
+            }
+          },
+          "leftContent": {
+            "columnMatch": "EstimatedCost",
+            "formatter": 12,
+            "formatOptions": {
+              "palette": "auto"
+            },
+            "numberFormat": {
+              "unit": 0,
+              "options": {
+                "style": "currency",
+                "currency": "USD",
+                "minimumFractionDigits": 2
+              }
+            }
+          }
+        }
+      },
+      "customWidth": "50",
+      "name": "cost-per-share-summary"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Cost Per Share by Meter - Current Month\n// \u26a0\ufe0f UPDATE THIS BLOCK with your file share names and provisioned sizes (GiB)\n// Run this to find your shares:\n//   az rest --method get --url \"https://management.azure.com<storage-account-resource-id>/fileServices/default/shares?api-version=2023-05-01\" --query \"value[].{name:name,GiB:properties.shareQuota}\" -o table\nlet ShareInfo = datatable(ShareName:string, ProvisionedGiB:real)\n[\n    \"share1\", 100.0,\n    \"share2\", 500.0\n];\nlet TotalCapacity = ShareInfo | summarize TotalGiB = sum(ProvisionedGiB);\nlet MeterCosts = AzureCostData_CL\n| where TimeGenerated >= startofmonth(now())\n| extend sa = tolower(StorageAccountName)\n| where sa == tolower(extract(@\"/storageAccounts/([^/]+)\", 1, \"{StorageAccount}\"))\n| extend Cost = todouble(CostValue)\n| summarize MeterCost = sum(Cost) by MeterName;\nShareInfo\n| extend TotalGiB = toscalar(TotalCapacity)\n| join kind=cross MeterCosts\n| extend EstimatedCost = round((ProvisionedGiB / TotalGiB) * MeterCost, 6)\n| project ShareName, MeterName, ProvisionedGiB, EstimatedCost\n| order by ShareName asc, EstimatedCost desc",
+        "size": 0,
+        "title": "Cost Per Share by Meter",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "{LogAnalyticsWorkspace}"
+        ],
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "EstimatedCost",
+              "formatter": 0,
+              "numberFormat": {
+                "unit": 0,
+                "options": {
+                  "style": "currency",
+                  "currency": "USD",
+                  "minimumFractionDigits": 6
+                }
+              }
+            },
+            {
+              "columnMatch": "ProvisionedGiB",
+              "formatter": 0,
+              "numberFormat": {
+                "unit": 0,
+                "options": {
+                  "style": "decimal",
+                  "maximumFractionDigits": 0,
+                  "suffix": " GiB"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "customWidth": "50",
+      "name": "cost-per-share-detail"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Month-over-Month Cost Per Share\n// \u26a0\ufe0f UPDATE THIS BLOCK with your file share names and provisioned sizes (GiB)\n// Run this to find your shares:\n//   az rest --method get --url \"https://management.azure.com<storage-account-resource-id>/fileServices/default/shares?api-version=2023-05-01\" --query \"value[].{name:name,GiB:properties.shareQuota}\" -o table\nlet ShareInfo = datatable(ShareName:string, ProvisionedGiB:real)\n[\n    \"share1\", 100.0,\n    \"share2\", 500.0\n];\nlet TotalCapacity = ShareInfo | summarize TotalGiB = sum(ProvisionedGiB);\nlet CurrentMonth = AzureCostData_CL\n| where TimeGenerated >= startofmonth(now())\n| extend sa = tolower(StorageAccountName)\n| where sa == tolower(extract(@\"/storageAccounts/([^/]+)\", 1, \"{StorageAccount}\"))\n| extend Cost = todouble(CostValue)\n| summarize AccountCost = sum(Cost);\nlet PreviousMonth = AzureCostData_CL\n| where TimeGenerated >= startofmonth(datetime_add('month', -1, now())) and TimeGenerated < startofmonth(now())\n| extend sa = tolower(StorageAccountName)\n| where sa == tolower(extract(@\"/storageAccounts/([^/]+)\", 1, \"{StorageAccount}\"))\n| extend Cost = todouble(CostValue)\n| summarize AccountCost = sum(Cost);\nShareInfo\n| extend TotalGiB = toscalar(TotalCapacity)\n| extend CurrentCost = round((ProvisionedGiB / TotalGiB) * toscalar(CurrentMonth), 4)\n| extend PreviousCost = round((ProvisionedGiB / TotalGiB) * toscalar(PreviousMonth), 4)\n| extend CostChange = round(CurrentCost - PreviousCost, 4)\n| extend ChangePercent = iff(PreviousCost > 0, round((CostChange / PreviousCost) * 100, 1), 0.0)\n| project ShareName, CurrentCost, PreviousCost, CostChange, ChangePercent\n| order by CurrentCost desc",
+        "size": 0,
+        "title": "Month-over-Month Cost Per Share",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "{LogAnalyticsWorkspace}"
+        ],
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "CurrentCost|PreviousCost|CostChange",
+              "formatter": 0,
+              "numberFormat": {
+                "unit": 0,
+                "options": {
+                  "style": "currency",
+                  "currency": "USD",
+                  "minimumFractionDigits": 4
+                }
+              }
+            },
+            {
+              "columnMatch": "ChangePercent",
+              "formatter": 18,
+              "formatOptions": {
+                "thresholdsOptions": "icons",
+                "thresholdsGrid": [
+                  {
+                    "operator": ">",
+                    "thresholdValue": "10",
+                    "representation": "up",
+                    "text": "{0}%"
+                  },
+                  {
+                    "operator": "<",
+                    "thresholdValue": "-10",
+                    "representation": "down",
+                    "text": "{0}%"
+                  },
+                  {
+                    "operator": "Default",
+                    "representation": "right",
+                    "text": "{0}%"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "customWidth": "50",
+      "name": "cost-per-share-comparison"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Daily Cost Trend Per Share\n// \u26a0\ufe0f UPDATE THIS BLOCK with your file share names and provisioned sizes (GiB)\n// Run this to find your shares:\n//   az rest --method get --url \"https://management.azure.com<storage-account-resource-id>/fileServices/default/shares?api-version=2023-05-01\" --query \"value[].{name:name,GiB:properties.shareQuota}\" -o table\nlet ShareInfo = datatable(ShareName:string, ProvisionedGiB:real)\n[\n    \"share1\", 100.0,\n    \"share2\", 500.0\n];\nlet TotalCapacity = ShareInfo | summarize TotalGiB = sum(ProvisionedGiB);\nlet DailyCosts = AzureCostData_CL\n| where TimeGenerated >= startofmonth(now())\n| extend sa = tolower(StorageAccountName)\n| where sa == tolower(extract(@\"/storageAccounts/([^/]+)\", 1, \"{StorageAccount}\"))\n| extend Cost = todouble(CostValue)\n| summarize DailyAccountCost = sum(Cost) by UsageDate;\nShareInfo\n| extend TotalGiB = toscalar(TotalCapacity)\n| join kind=cross DailyCosts\n| extend EstimatedCost = round((ProvisionedGiB / TotalGiB) * DailyAccountCost, 4)\n| project UsageDate, ShareName, EstimatedCost\n| order by UsageDate asc",
+        "size": 0,
+        "title": "Daily Cost Trend Per Share",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "{LogAnalyticsWorkspace}"
+        ],
+        "visualization": "linechart"
+      },
+      "name": "cost-per-share-trend"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "---\n\n## \ufffd\ud83d\udcca Performance Metrics (Azure Monitor)\n\nReal-time metrics from Azure Monitor - split by file share."
+      },
+      "name": "metrics-header"
+    },
+    {
+      "type": 10,
+      "content": {
+        "chartId": "quota-table",
+        "version": "MetricsItem/2.0",
+        "size": 0,
+        "chartType": 0,
+        "resourceType": "microsoft.storage/storageaccounts",
+        "metricScope": 0,
+        "resourceIds": [
+          "{StorageAccount}"
+        ],
+        "timeContext": {
+          "durationMs": 2592000000
+        },
+        "metrics": [
+          {
+            "namespace": "microsoft.storage/storageaccounts/fileservices",
+            "metric": "microsoft.storage/storageaccounts/fileservices-Capacity-FileShareCapacityQuota",
+            "aggregation": 4,
+            "splitBy": "FileShare",
+            "columnName": "Provisioned Quota"
+          },
+          {
+            "namespace": "microsoft.storage/storageaccounts/fileservices",
+            "metric": "microsoft.storage/storageaccounts/fileservices-Capacity-FileCapacity",
+            "aggregation": 4,
+            "splitBy": "FileShare",
+            "columnName": "Used Capacity"
+          },
+          {
+            "namespace": "microsoft.storage/storageaccounts/fileservices",
+            "metric": "microsoft.storage/storageaccounts/fileservices-Capacity-FileShareSnapshotSize",
+            "aggregation": 4,
+            "splitBy": "FileShare",
+            "columnName": "Snapshot Size"
+          }
+        ],
+        "title": "Capacity Summary Per Share",
+        "gridFormatType": 1,
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "Provisioned Quota|Used Capacity|Snapshot Size",
+              "formatter": 0,
+              "numberFormat": {
+                "unit": 2,
+                "options": {
+                  "style": "decimal",
+                  "maximumFractionDigits": 2
+                }
+              }
+            }
+          ],
+          "rowLimit": 10000
+        }
+      },
+      "name": "capacity-table"
+    },
+    {
+      "type": 10,
+      "content": {
+        "chartId": "quota-trend",
+        "version": "MetricsItem/2.0",
+        "size": 0,
+        "chartType": 2,
+        "resourceType": "microsoft.storage/storageaccounts",
+        "metricScope": 0,
+        "resourceIds": [
+          "{StorageAccount}"
+        ],
+        "timeContext": {
+          "durationMs": 7776000000
+        },
+        "metrics": [
+          {
+            "namespace": "microsoft.storage/storageaccounts/fileservices",
+            "metric": "microsoft.storage/storageaccounts/fileservices-Capacity-FileShareCapacityQuota",
+            "aggregation": 4,
+            "splitBy": "FileShare"
+          }
+        ],
+        "title": "Provisioned Capacity Trend (90 Days)"
+      },
+      "customWidth": "50",
+      "name": "quota-trend"
+    },
+    {
+      "type": 10,
+      "content": {
+        "chartId": "transactions",
+        "version": "MetricsItem/2.0",
+        "size": 0,
+        "chartType": 2,
+        "resourceType": "microsoft.storage/storageaccounts",
+        "metricScope": 0,
+        "resourceIds": [
+          "{StorageAccount}"
+        ],
+        "timeContext": {
+          "durationMs": 7776000000
+        },
+        "metrics": [
+          {
+            "namespace": "microsoft.storage/storageaccounts/fileservices",
+            "metric": "microsoft.storage/storageaccounts/fileservices-Transaction-Transactions",
+            "aggregation": 1,
+            "splitBy": "FileShare"
+          }
+        ],
+        "title": "Transactions (IOPS) - Per Share"
+      },
+      "customWidth": "50",
+      "name": "transactions"
+    },
+    {
+      "type": 10,
+      "content": {
+        "chartId": "egress",
+        "version": "MetricsItem/2.0",
+        "size": 0,
+        "chartType": 2,
+        "resourceType": "microsoft.storage/storageaccounts",
+        "metricScope": 0,
+        "resourceIds": [
+          "{StorageAccount}"
+        ],
+        "timeContext": {
+          "durationMs": 7776000000
+        },
+        "metrics": [
+          {
+            "namespace": "microsoft.storage/storageaccounts/fileservices",
+            "metric": "microsoft.storage/storageaccounts/fileservices-Transaction-Egress",
+            "aggregation": 1,
+            "splitBy": "FileShare"
+          }
+        ],
+        "title": "Egress (Throughput Out) - Per Share"
+      },
+      "customWidth": "50",
+      "name": "egress"
+    },
+    {
+      "type": 10,
+      "content": {
+        "chartId": "ingress",
+        "version": "MetricsItem/2.0",
+        "size": 0,
+        "chartType": 2,
+        "resourceType": "microsoft.storage/storageaccounts",
+        "metricScope": 0,
+        "resourceIds": [
+          "{StorageAccount}"
+        ],
+        "timeContext": {
+          "durationMs": 7776000000
+        },
+        "metrics": [
+          {
+            "namespace": "microsoft.storage/storageaccounts/fileservices",
+            "metric": "microsoft.storage/storageaccounts/fileservices-Transaction-Ingress",
+            "aggregation": 1,
+            "splitBy": "FileShare"
+          }
+        ],
+        "title": "Ingress (Throughput In) - Per Share"
+      },
+      "customWidth": "50",
+      "name": "ingress"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "---\n\n## \ud83d\udd27 Setup Guide\n\n### Prerequisites\n1. **Log Analytics Workspace** with `AzureCostData_CL` custom table\n2. **Data Collection Endpoint** + **Data Collection Rule** for ingestion\n3. **Logic App** that queries Cost Management API and sends data via DCR\n4. **Diagnostic Settings** on storage account (Capacity + Transaction metrics \u2192 Log Analytics)\n\n### Customizing Share Names\nEach cost-per-share query contains a `datatable` block \u2014 update with your share names and provisioned GiB.\n\nFull deployment guide: [GitHub Repository](https://github.com/travishankins/azure-fileshare-cost-workbook)"
+      },
+      "name": "setup-guide"
+    }
+  ],
+  "fallbackResourceIds": [
+    "/subscriptions/{Subscription}"
+  ],
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}
