@@ -155,6 +155,6 @@ The `AzureCostData_CL` custom table in Log Analytics:
 
 Contributions welcome! Please open an issue or PR.
 
-## 📄 License
+## ⚖️ License
 
 [MIT](LICENSE)
