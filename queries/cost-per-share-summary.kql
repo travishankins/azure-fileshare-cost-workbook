@@ -1,0 +1,11 @@
+let Totals = CostRows
+| where UsageDay >= startofmonth(now())
+| summarize AccountCost = sum(Cost) by Currency
+| extend JoinKey = 1;
+ShareInfo
+| extend JoinKey = 1
+| join kind=inner Totals on JoinKey
+| extend SharePortion = round(100.0 * ProvisionedGiB / TotalGiB, 1)
+| extend EstimatedCost = iff(TotalGiB > 0, round(ProvisionedGiB / TotalGiB * AccountCost, 4), real(null))
+| project ShareName, ProvisionedGiB, SharePortion, EstimatedCost, Currency
+| order by EstimatedCost desc

@@ -1,0 +1,10 @@
+let Totals = CostRows
+| where UsageDay >= startofmonth(now())
+| summarize MeterCost = sum(Cost) by MeterName, Currency
+| extend JoinKey = 1;
+ShareInfo
+| extend JoinKey = 1
+| join kind=inner Totals on JoinKey
+| extend EstimatedCost = iff(TotalGiB > 0, round(ProvisionedGiB / TotalGiB * MeterCost, 6), real(null))
+| project ShareName, MeterName, ProvisionedGiB, EstimatedCost, Currency
+| order by ShareName asc, MeterName asc

@@ -1,0 +1,12 @@
+let ShareInfo = datatable(ShareName:string, ProvisionedGiB:real)
+[
+    "share1", 100.0,
+    "share2", 500.0
+];
+let TotalGiB = toscalar(ShareInfo | summarize sum(ProvisionedGiB));
+let CostRows = AzureCostData_CL
+| extend ResourceId = tolower(ResourceId)
+| where ResourceId == tolower("{StorageAccount}")
+| summarize arg_max(TimeGenerated, *) by ResourceId, UsageDate, MeterName, Currency
+| extend UsageDay = todatetime(UsageDate), Cost = todouble(CostValue)
+| where UsageDay >= startofmonth(datetime_add('month', -1, now())) and UsageDay < now();

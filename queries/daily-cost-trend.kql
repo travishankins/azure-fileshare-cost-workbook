@@ -1,0 +1,10 @@
+let Totals = CostRows
+| where UsageDay >= startofmonth(now())
+| summarize DailyCost = sum(Cost) by UsageDay, Currency
+| extend JoinKey = 1;
+ShareInfo
+| extend JoinKey = 1
+| join kind=inner Totals on JoinKey
+| extend EstimatedCost = iff(TotalGiB > 0, round(ProvisionedGiB / TotalGiB * DailyCost, 4), real(null))
+| project UsageDate = UsageDay, ShareName, EstimatedCost, Currency
+| order by UsageDate asc

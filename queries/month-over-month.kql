@@ -1,0 +1,13 @@
+let Totals = CostRows
+| summarize CurrentTotal = sumif(Cost, UsageDay >= startofmonth(now())),
+            PreviousTotal = sumif(Cost, UsageDay < startofmonth(now())) by Currency
+| extend JoinKey = 1;
+ShareInfo
+| extend JoinKey = 1
+| join kind=inner Totals on JoinKey
+| extend CurrentCost = iff(TotalGiB > 0, round(ProvisionedGiB / TotalGiB * CurrentTotal, 4), real(null)),
+         PreviousCost = iff(TotalGiB > 0, round(ProvisionedGiB / TotalGiB * PreviousTotal, 4), real(null))
+| extend CostChange = CurrentCost - PreviousCost
+| extend ChangePercent = iff(PreviousCost != 0, 100.0 * CostChange / abs(PreviousCost), real(null))
+| project ShareName, CurrentCost, PreviousCost, CostChange, ChangePercent, Currency
+| order by CurrentCost desc

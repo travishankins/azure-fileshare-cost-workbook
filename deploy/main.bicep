@@ -8,9 +8,10 @@ targetScope = 'resourceGroup'
 param location string = resourceGroup().location
 
 @description('Name prefix for all resources')
+@minLength(1)
 param namePrefix string = 'fscost'
 
-@description('Resource ID of the Premium FileStorage account to monitor')
+@description('Resource ID of a Premium FileStorage account in this deployment resource group')
 param storageAccountResourceId string
 
 // ============================================================================
@@ -166,7 +167,7 @@ resource logicApp 'Microsoft.Logic/workflows@2019-05-01' = {
               {
                 name: 'StartDate'
                 type: 'string'
-                value: '@{formatDateTime(addDays(utcNow(), -30), \'yyyy-MM-dd\')}'
+                value: '@{formatDateTime(addDays(utcNow(), -90), \'yyyy-MM-dd\')}'
               }
             ]
           }
@@ -208,10 +209,10 @@ resource logicApp 'Microsoft.Logic/workflows@2019-05-01' = {
           }
           inputs: {
             method: 'POST'
-            uri: 'https://management.azure.com/subscriptions/@{parameters(\'subscriptionId\')}/providers/Microsoft.CostManagement/query?api-version=2023-03-01'
+            uri: '${environment().resourceManager}${substring(resourceGroup().id, 1)}/providers/Microsoft.CostManagement/query?api-version=2023-03-01'
             authentication: {
               type: 'ManagedServiceIdentity'
-              audience: 'https://management.azure.com'
+              audience: environment().resourceManager
             }
             body: {
               type: 'ActualCost'
@@ -228,14 +229,41 @@ resource logicApp 'Microsoft.Logic/workflows@2019-05-01' = {
                 }
                 grouping: [
                   { type: 'Dimension', name: 'ResourceId' }
-                  { type: 'Dimension', name: 'MeterCategory' }
                   { type: 'Dimension', name: 'Meter' }
                 ]
                 filter: {
                   dimensions: {
-                    name: 'MeterCategory'
+                    name: 'ResourceId'
                     operator: 'In'
-                    values: ['Storage', 'Files', 'Azure Files', 'File Storage']
+                    values: [storageAccountResourceId]
+                  }
+                }
+              }
+            }
+          }
+        }
+        Column_names: {
+          type: 'Select'
+          runAfter: { Query_Cost_Management: ['Succeeded'] }
+          inputs: {
+            from: '@body(\'Query_Cost_Management\')?[\'properties\']?[\'columns\']'
+            select: '@item()?[\'name\']'
+          }
+        }
+        Validate_response: {
+          type: 'If'
+          runAfter: { Column_names: ['Succeeded'] }
+          expression: '@and(equals(join(body(\'Column_names\'), \',\'), \'Cost,UsageQuantity,UsageDate,ResourceId,Meter,Currency\'), empty(body(\'Query_Cost_Management\')?[\'properties\']?[\'nextLink\']))'
+          actions: {}
+          else: {
+            actions: {
+              Reject_partial_or_changed_response: {
+                type: 'Terminate'
+                inputs: {
+                  runStatus: 'Failed'
+                  runError: {
+                    code: 'UnsupportedCostResponse'
+                    message: 'Cost response is paginated or its columns changed. No partial billing data was ingested.'
                   }
                 }
               }
@@ -245,11 +273,11 @@ resource logicApp 'Microsoft.Logic/workflows@2019-05-01' = {
         Build_Log_Records: {
           type: 'Foreach'
           runAfter: {
-            Query_Cost_Management: ['Succeeded']
+            Validate_response: ['Succeeded']
           }
           foreach: '@body(\'Query_Cost_Management\')?[\'properties\']?[\'rows\']'
           runtimeConfiguration: {
-            concurrency: { repetitions: 50 }
+            concurrency: { repetitions: 1 }
           }
           actions: {
             Append_Record: {
@@ -261,11 +289,11 @@ resource logicApp 'Microsoft.Logic/workflows@2019-05-01' = {
                   ResourceId: '@{items(\'Build_Log_Records\')[3]}'
                   StorageAccountName: '@{if(contains(toLower(string(items(\'Build_Log_Records\')[3])), \'storageaccounts/\'), first(split(last(split(toLower(string(items(\'Build_Log_Records\')[3])), \'storageaccounts/\')), \'/\')), \'\')}'
                   ShareName: '@{if(contains(toLower(string(items(\'Build_Log_Records\')[3])), \'/fileservices/default/shares/\'), last(split(toLower(string(items(\'Build_Log_Records\')[3])), \'/fileservices/default/shares/\')), \'\')}'
-                  MeterCategory: '@{items(\'Build_Log_Records\')[4]}'
-                  MeterName: '@{if(greater(length(items(\'Build_Log_Records\')), 5), items(\'Build_Log_Records\')[5], \'\')}'
+                  MeterCategory: 'Storage'
+                  MeterName: '@{items(\'Build_Log_Records\')[4]}'
                   CostValue: '@{string(items(\'Build_Log_Records\')[0])}'
                   QuantityValue: '@{string(items(\'Build_Log_Records\')[1])}'
-                  Currency: 'USD'
+                  Currency: '@{items(\'Build_Log_Records\')[5]}'
                   UsageDate: '@{concat(substring(string(items(\'Build_Log_Records\')[2]), 0, 4), \'-\', substring(string(items(\'Build_Log_Records\')[2]), 4, 2), \'-\', substring(string(items(\'Build_Log_Records\')[2]), 6, 2))}'
                 }
               }
@@ -319,12 +347,15 @@ resource storageFileService 'Microsoft.Storage/storageAccounts/fileServices@2023
 // Role Assignments for Logic App Managed Identity
 // ============================================================================
 
-// Cost Management Reader on subscription
+// Cost Management Reader on the queried resource group
 resource costManagementReaderRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(subscription().id, logicApp.id, 'CostManagementReader')
   scope: resourceGroup()
   properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '72fafb9e-0641-4937-9268-a91bfd8191a3')
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      '72fafb9e-0641-4937-9268-a91bfd8191a3'
+    )
     principalId: logicApp.identity.principalId
     principalType: 'ServicePrincipal'
   }
@@ -335,7 +366,10 @@ resource metricsPublisherRole 'Microsoft.Authorization/roleAssignments@2022-04-0
   name: guid(dataCollectionRule.id, logicApp.id, 'MonitoringMetricsPublisher')
   scope: dataCollectionRule
   properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '3913510d-42f4-4e42-8a64-420c390055eb')
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      '3913510d-42f4-4e42-8a64-420c390055eb'
+    )
     principalId: logicApp.identity.principalId
     principalType: 'ServicePrincipal'
   }
